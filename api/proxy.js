@@ -1,50 +1,62 @@
-// api/proxy.js
-
-/**
- * Этот скрипт является прослойкой (прокси) между Roblox и Google Gemini API.
- * Он необходим, так как Roblox блокирует прямые запросы к доменам Google,
- * а Vercel позволяет обойти это ограничение.
- */
-
 export default async function handler(req, res) {
-    // Настройка CORS (разрешаем доступ для Roblox)
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-goog-api-key, x-goog-api-client');
+  // 1. Проверка метода
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Используйте POST запрос' });
+  }
 
-    // Ответ на предварительный запрос браузера/сервера
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+  const { key } = req.query;
+  if (!key) {
+    return res.status(400).json({ error: 'Ключ API (key) не найден в URL' });
+  }
 
-    // Формируем URL для оригинального API Gemini
-    // Мы берем путь из запроса к прокси и добавляем его к адресу Google
-    const targetUrl = `https://generativelanguage.googleapis.com${req.url}`;
+  // 2. Настройка модели (используем стабильную flash версию)
+  const MODEL = "gemini-2.0-flash";
+  const GOOGLE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`;
 
+  // Функция для запроса с экспоненциальной задержкой (retry)
+  const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
     try {
-        // Подготавливаем заголовки. 
-        // Мы копируем все заголовки из Roblox, но принудительно ставим правильный хост.
-        const headers = { ...req.headers };
-        delete headers.host; 
-        headers['host'] = 'generativelanguage.googleapis.com';
-
-        const response = await fetch(targetUrl, {
-            method: req.method,
-            headers: headers,
-            // Если это POST запрос, передаем тело (json с вопросом)
-            body: req.method === 'POST' ? JSON.stringify(req.body) : null
-        });
-
-        // Получаем данные от Google
-        const data = await response.json();
-        
-        // Отправляем их обратно в Roblox
-        res.status(response.status).json(data);
-    } catch (error) {
-        console.error("Ошибка проксирования:", error);
-        res.status(500).json({ 
-            error: "Proxy server error", 
-            details: error.message 
-        });
+      const response = await fetch(url, options);
+      if (response.status === 429 && retries > 0) { // Ошибка Too Many Requests
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        return fetchWithRetry(url, options, retries - 1, backoff * 2);
+      }
+      return response;
+    } catch (err) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, backoff));
+        return fetchWithRetry(url, options, retries - 1, backoff * 2);
+      }
+      throw err;
     }
+  };
+
+  try {
+    const response = await fetchWithRetry(GOOGLE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+
+    const contentType = response.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      return res.status(response.status).json(data);
+    } else {
+      // Если пришел не JSON, значит Google отдал ошибку в формате HTML/Text
+      const errorText = await response.text();
+      return res.status(response.status).json({
+        error: "Google API вернул ошибку",
+        status: response.status,
+        details: errorText.substring(0, 200) // Берем начало текста ошибки
+      });
+    }
+
+  } catch (err) {
+    return res.status(500).json({
+      error: "Ошибка прокси-сервера",
+      message: err.message
+    });
+  }
 }
