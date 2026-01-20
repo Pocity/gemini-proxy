@@ -1,40 +1,63 @@
-// Vercel Serverless Function для связи Roblox и Gemini
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
+// Vercel Serverless Function для взаимодействия с Gemini API
 export default async function handler(req, res) {
-  // Настройка CORS для доступа извне
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
-
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
+  // Разрешаем только POST запросы
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: "Пожалуйста, используйте метод POST" });
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { message } = req.body;
-  const apiKey = process.env.GEMINI_API_KEY; // Ключ должен быть в Environment Variables в Vercel
-
-  if (!apiKey) {
-    return res.status(500).json({ error: "API ключ не настроен в Vercel" });
-  }
+  // В этой среде ключ вставляется автоматически при пустой строке
+  const apiKey = ""; 
+  const model = "gemini-2.5-flash-preview-09-2025";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   try {
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const { prompt } = req.body;
 
-    const result = await model.generateContent(message);
-    const response = await result.response;
-    const text = response.text();
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
 
-    res.status(200).json({ reply: text });
+    // Реализация экспоненциальной задержки (Retry logic)
+    const fetchWithRetry = async (retries = 5, delay = 1000) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }]
+            }),
+          });
+
+          if (response.ok) return response;
+          
+          // Если 401 или 403 - это проблема ключа, ретрай не поможет
+          if (response.status === 401 || response.status === 403) {
+             const errData = await response.json();
+             throw new Error(`Google API Auth Error: ${response.status} - ${JSON.stringify(errData)}`);
+          }
+
+          // Для остальных ошибок (например 429) ждем
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; 
+        } catch (err) {
+          if (i === retries - 1) throw err;
+        }
+      }
+    };
+
+    const apiResponse = await fetchWithRetry();
+    const data = await apiResponse.json();
+
+    // Извлекаем текст из ответа Gemini
+    const aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || "No response from AI";
+
+    return res.status(200).json({ response: aiText });
+
   } catch (error) {
-    console.error("Ошибка Gemini:", error);
-    res.status(500).json({ error: "Ошибка при обработке запроса", details: error.message });
+    console.error("Server Error:", error.message);
+    return res.status(500).json({ error: error.message });
   }
 }
