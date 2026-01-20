@@ -1,1 +1,12 @@
-"dependencies": { "@google/generative-ai": "^0.x.x" }
+{
+  "name": "roblox-gemini-api",
+  "version": "1.0.0",
+  "description": "API for Roblox Gemini integration",
+  "main": "api/chat.js",
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
