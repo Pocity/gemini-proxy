@@ -1,46 +1,40 @@
-// Этот файл должен лежать в папке api/ вашего репозитория на GitHub
-// Vercel автоматически подхватит его как Serverless функцию
+// Vercel Serverless Function для связи Roblox и Gemini
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 export default async function handler(req, res) {
-    // Разрешаем запросы только методом POST
-    if (req.method !== 'POST') {
-        return res.status(405).json({ error: "Используйте POST запрос. Сервер прокси активен." });
-    }
+  // Настройка CORS для доступа извне
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
 
-    try {
-        const { prompt, apiKey } = req.body;
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
 
-        if (!prompt || !apiKey) {
-            return res.status(400).json({ error: "Ошибка: prompt или apiKey не переданы в теле запроса." });
-        }
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: "Пожалуйста, используйте метод POST" });
+  }
 
-        // Прямой запрос к Google API от лица серверов Vercel (у них нет проблем с SSL для Google)
-        const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const { message } = req.body;
+  const apiKey = process.env.GEMINI_API_KEY; // Ключ должен быть в Environment Variables в Vercel
 
-        const response = await fetch(GEMINI_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [{ text: prompt }]
-                }]
-            })
-        });
+  if (!apiKey) {
+    return res.status(500).json({ error: "API ключ не настроен в Vercel" });
+  }
 
-        const data = await response.json();
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-        if (data.candidates && data.candidates[0].content) {
-            const replyText = data.candidates[0].content.parts[0].text;
-            return res.status(200).json({ text: replyText });
-        } else {
-            console.error("Gemini Error:", data);
-            return res.status(500).json({ error: "API Gemini вернул ошибку", details: data });
-        }
+    const result = await model.generateContent(message);
+    const response = await result.response;
+    const text = response.text();
 
-    } catch (error) {
-        console.error("Proxy Error:", error);
-        return res.status(500).json({ error: "Внутренняя ошибка прокси-сервера", message: error.message });
-    }
+    res.status(200).json({ reply: text });
+  } catch (error) {
+    console.error("Ошибка Gemini:", error);
+    res.status(500).json({ error: "Ошибка при обработке запроса", details: error.message });
+  }
 }
