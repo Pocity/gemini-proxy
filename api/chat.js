@@ -1,7 +1,5 @@
-const axios = require('axios');
-
-module.exports = async (req, res) => {
-    // Настройка заголовков для работы с запросами из Roblox
+export default async function handler(req, res) {
+    // Настройка CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -10,51 +8,52 @@ module.exports = async (req, res) => {
         return res.status(200).end();
     }
 
-    // Проверяем наличие ключа в переменных окружения
-    const apiKey = process.env.GEMINI_API_KEY;
-
-    if (!apiKey) {
-        console.error("ОШИБКА: Переменная GEMINI_API_KEY не найдена в настройках Vercel!");
-        return res.status(401).json({ 
-            error: "Ключ API не настроен на сервере (Vercel Environment Variable missing)",
-            code: "MISSING_KEY"
-        });
+    if (req.method !== 'POST') {
+        return res.status(405).json({ error: "Method not allowed" });
     }
 
+    const apiKey = process.env.GEMINI_API_KEY;
     const { prompt } = req.body;
 
+    if (!apiKey) {
+        return res.status(500).json({ error: "API Key is missing in Vercel environment variables" });
+    }
+
     if (!prompt) {
-        return res.status(400).json({ error: "Пустой промпт" });
+        return res.status(400).json({ error: "No prompt provided" });
     }
 
     try {
-        // Используем актуальную модель gemini-1.5-flash (она быстрее и стабильнее для тестов)
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-        
-        const response = await axios.post(url, {
-            contents: [{
-                parts: [{ text: prompt }]
-            }]
-        }, {
-            headers: { 'Content-Type': 'application/json' }
+        // Используем стандартный fetch вместо axios, чтобы не устанавливать зависимости
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [{ text: prompt }]
+                }]
+            })
         });
 
-        if (response.data && response.data.candidates) {
-            const aiResponse = response.data.candidates[0].content.parts[0].text;
-            return res.status(200).json({ response: aiResponse });
-        } else {
-            throw new Error("Некорректный ответ от Google API");
+        const data = await response.json();
+
+        if (!response.ok) {
+            return res.status(response.status).json({ 
+                error: "Google API Error", 
+                details: data 
+            });
         }
 
-    } catch (error) {
-        const statusCode = error.response ? error.response.status : 500;
-        const errorData = error.response ? error.response.data : error.message;
-        
-        console.error("Ошибка при вызове Gemini API:", JSON.stringify(errorData));
-        
-        return res.status(statusCode).json({ 
-            error: "Ошибка на стороне Google API", 
-            details: errorData 
-        });
+        if (data.candidates && data.candidates[0].content.parts[0].text) {
+            const aiText = data.candidates[0].content.parts[0].text;
+            return res.status(200).json({ response: aiText });
+        } else {
+            return res.status(500).json({ error: "Unexpected response format from Google" });
+        }
+
+    } catch (err) {
+        return res.status(500).json({ error: "Server crashed", message: err.message });
     }
-};
+}
